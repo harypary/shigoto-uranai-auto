@@ -1,0 +1,140 @@
+name: Monthly Note - 12星座 月間仕事運・財運完全版（毎月1日9:00 JST・1,500円）
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'   # 毎月1日 9:00 JST（主）
+    - cron: '0 2 1 * *'   # 毎月1日 11:00 JST（バックアップ）
+  workflow_dispatch:
+
+jobs:
+  post-monthly-note:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright and browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Download Japanese font
+        run: |
+          mkdir -p assets/fonts
+          curl -sL -o assets/fonts/NotoSansJP-Regular.ttf \
+            "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf" \
+            || echo "Font download skipped"
+
+      - name: Create output directories
+        run: mkdir -p output/images output/logs output/stats output/strategy
+
+      - name: Restore strategy file from cache
+        uses: actions/cache@v4
+        with:
+          path: output/strategy/current_strategy.txt
+          key: strategy-${{ github.run_id }}
+          restore-keys: strategy-
+
+      - name: Restore post log from cache
+        uses: actions/cache@v4
+        with:
+          path: output/post_log.json
+          key: post-log-${{ github.run_id }}
+          restore-keys: post-log-
+
+      # ── セッション検証 ──────────────────────────────────────────
+      - name: Validate note.com session
+        id: session_check
+        env:
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+        run: |
+          python scripts/check_session.py && echo "session_ok=true" >> $GITHUB_OUTPUT \
+            || echo "session_ok=false" >> $GITHUB_OUTPUT
+
+      # ── 月次投稿（最大3回リトライ）────────────────────────────
+      - name: Post monthly note (attempt 1/3)
+        id: post_1
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+          LOG_LEVEL: INFO
+        run: python scripts/run_monthly.py
+
+      - name: Post monthly note (attempt 2/3)
+        id: post_2
+        if: steps.post_1.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+          LOG_LEVEL: INFO
+        run: |
+          sleep 90
+          python scripts/run_monthly.py
+
+      - name: Post monthly note (attempt 3/3)
+        id: post_3
+        if: steps.post_2.outcome == 'failure'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+          LOG_LEVEL: DEBUG
+        run: |
+          sleep 120
+          python scripts/run_monthly.py
+
+      # ── パフォーマンス分析 ──────────────────────────────────────
+      - name: Analyze performance & update strategy
+        if: always()
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+        run: python scripts/analyze_performance.py
+
+      - name: Save strategy to cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: output/strategy/current_strategy.txt
+          key: strategy-${{ github.run_id }}
+
+      - name: Save post log to cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: output/post_log.json
+          key: post-log-${{ github.run_id }}
+
+      - name: Upload output artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monthly-output-${{ github.run_number }}
+          path: |
+            output/images/
+            output/logs/
+            output/stats/
+            output/strategy/
+          retention-days: 30

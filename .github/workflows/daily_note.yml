@@ -1,0 +1,187 @@
+name: Daily Note - 12星座 今日の仕事運とお金の流れ（毎日7:00 JST・300円）
+
+on:
+  schedule:
+    - cron: '0 22 * * *'    # 7:00 JST（主）
+    - cron: '0 23 * * *'    # 8:00 JST（バックアップ1: 主が失敗した場合）
+    - cron: '30 23 * * *'   # 8:30 JST（バックアップ2: 両方失敗した場合）
+  workflow_dispatch:
+
+# 並走すると post_log をお互い参照できず同じ星座を二重投稿するため、
+# 常に1本だけ走らせる（実行中のものを優先し、後発は待たせず捨てる）。
+concurrency:
+  group: daily-note
+  cancel-in-progress: false
+
+jobs:
+  post-daily-note:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 重複実行スキップ（バックアップcronが誤って重複投稿しないように）──
+      - name: Skip if already posted today
+        id: skip_check
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          # 成功済み、またはキャンセル済みで60分以上実行されたrun（タイムアウトによる実質完了）をカウント
+          DONE=$(gh api repos/${{ github.repository }}/actions/workflows/daily_note.yml/runs \
+            --jq "[.workflow_runs[] | select(.created_at | startswith(\"$TODAY\")) | select(.conclusion == \"success\" or (.conclusion == \"cancelled\" and ((.updatedAt // .updated_at) | if . then (now - (. | sub(\"Z\";\"\") | strptime(\"%Y-%m-%dT%H:%M:%S\") | mktime)) else 0 end) > 3600))] | length" 2>/dev/null || echo "0")
+          # シンプル版: 成功のみチェック
+          SUCCESS=$(gh api repos/${{ github.repository }}/actions/workflows/daily_note.yml/runs \
+            --jq "[.workflow_runs[] | select(.created_at | startswith(\"$TODAY\")) | select(.conclusion == \"success\")] | length" 2>/dev/null || echo "0")
+          echo "Today's success count: $SUCCESS"
+          echo "already_done=$( [ \"$SUCCESS\" -gt 0 ] && echo true || echo false )" >> $GITHUB_OUTPUT
+
+      - name: Exit if already posted today
+        if: steps.skip_check.outputs.already_done == 'true'
+        run: |
+          echo "本日分は既に投稿済みです。スキップします。"
+          exit 0
+
+      - name: Set up Python 3.11
+        if: steps.skip_check.outputs.already_done != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        if: steps.skip_check.outputs.already_done != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright and browsers
+        if: steps.skip_check.outputs.already_done != 'true'
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Download Japanese font
+        if: steps.skip_check.outputs.already_done != 'true'
+        run: |
+          mkdir -p assets/fonts
+          curl -sL -o assets/fonts/NotoSansJP-Regular.ttf \
+            "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf" \
+            || echo "Font download skipped"
+
+      - name: Create output directories
+        if: steps.skip_check.outputs.already_done != 'true'
+        run: mkdir -p output/images output/logs output/stats output/strategy
+
+      - name: Get today's date for cache key
+        id: date
+        if: steps.skip_check.outputs.already_done != 'true'
+        run: echo "today=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Restore strategy file from cache
+        if: steps.skip_check.outputs.already_done != 'true'
+        uses: actions/cache@v4
+        with:
+          path: output/strategy/current_strategy.txt
+          key: strategy-${{ steps.date.outputs.today }}
+          restore-keys: strategy-
+
+      - name: Restore post log from cache
+        if: steps.skip_check.outputs.already_done != 'true'
+        uses: actions/cache@v4
+        with:
+          path: output/post_log.json
+          key: post-log-${{ steps.date.outputs.today }}
+          restore-keys: post-log-
+
+      # ── セッション検証（失敗したら自動更新）──────────────────
+      - name: Validate note.com session
+        id: session_check
+        if: steps.skip_check.outputs.already_done != 'true'
+        env:
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+        run: |
+          python scripts/check_session.py && echo "session_ok=true" >> $GITHUB_OUTPUT \
+            || echo "session_ok=false" >> $GITHUB_OUTPUT
+
+      # ── 日次投稿（最大3回リトライ）────────────────────────────
+      - name: Post daily note (attempt 1/3)
+        id: post_1
+        if: steps.skip_check.outputs.already_done != 'true'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+          LOG_LEVEL: INFO
+        run: python scripts/run_daily.py
+
+      - name: Post daily note (attempt 2/3)
+        id: post_2
+        if: steps.skip_check.outputs.already_done != 'true' && steps.post_1.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+          LOG_LEVEL: INFO
+        run: |
+          echo "1回目失敗 → 60秒待機後にリトライ"
+          sleep 60
+          python scripts/run_daily.py
+
+      - name: Post daily note (attempt 3/3)
+        id: post_3
+        if: steps.skip_check.outputs.already_done != 'true' && steps.post_2.outcome == 'failure'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+          LOG_LEVEL: DEBUG
+        run: |
+          echo "2回目失敗 → 90秒待機後に最終リトライ（DEBUG モード）"
+          sleep 90
+          python scripts/run_daily.py
+
+      # ── パフォーマンス分析（投稿後）────────────────────────────
+      - name: Analyze performance & update strategy
+        if: steps.skip_check.outputs.already_done != 'true'
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTE_SESSION_B64: ${{ secrets.NOTE_SESSION_B64 }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+          NOTE_USER_ID: ${{ vars.NOTE_USER_ID }}
+        run: python scripts/analyze_performance.py
+
+      - name: Save strategy to cache
+        if: steps.skip_check.outputs.already_done != 'true'
+        uses: actions/cache@v4
+        with:
+          path: output/strategy/current_strategy.txt
+          key: strategy-${{ steps.date.outputs.today }}
+
+      - name: Save post log to cache
+        if: steps.skip_check.outputs.already_done != 'true'
+        uses: actions/cache@v4
+        with:
+          path: output/post_log.json
+          key: post-log-${{ steps.date.outputs.today }}
+
+      - name: Upload output artifacts
+        if: steps.skip_check.outputs.already_done != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-output-${{ github.run_number }}
+          path: |
+            output/images/
+            output/logs/
+            output/stats/
+            output/strategy/
+          retention-days: 7
