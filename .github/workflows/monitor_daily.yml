@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: write
+      contents: read   # 非公開リポジトリでは明示しないと checkout できない
 
     steps:
       # 暗号化セッション（data/session/note_session.enc）の期限を見るため

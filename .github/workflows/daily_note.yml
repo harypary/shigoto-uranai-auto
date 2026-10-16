@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       actions: read
+      contents: read   # 非公開リポジトリでは明示しないと checkout できない
 
     steps:
       - name: Checkout repository
