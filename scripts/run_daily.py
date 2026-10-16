@@ -36,9 +36,10 @@ from src.utils.logger import get_logger
 logger = get_logger("run_daily")
 
 POST_INTERVAL = 30
-# 1回のGemini呼び出しで生成する星座数。12件を1回にまとめると出力トークン
-# 上限(65,536)を超えて後半が欠落するため、4件ずつ3回に分ける。
-BATCH_SIZE = int(os.environ.get("DAILY_BATCH_SIZE", "4"))
+# 1回のGemini呼び出しで生成する星座数。この新しいGoogleプロジェクトでは gemini-2.5-flash が使えず、
+# 3.x 系のモデルは複数星座を頼んでも1星座ぶんしか書かない（2026-10-16 確認）。そのため1星座ずつ生成する。
+# 無料枠はモデルごとに1日20回で、使い切ると次のモデルへ自動で切り替わる。
+BATCH_SIZE = int(os.environ.get("DAILY_BATCH_SIZE", "1"))
 PRICE = 300
 POST_TYPE = "daily"
 HASHTAG_BASE = ["仕事運", "今日の運勢", "占い", "星座占い", "金運"]

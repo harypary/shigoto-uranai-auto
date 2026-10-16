@@ -152,7 +152,7 @@ class HoroscopeGenerator:
             style_guide=_load_style_guide(),
         )
 
-        raw = self._client.generate(prompt, max_tokens=8192, temperature=0.88)
+        raw = self._client.generate(prompt, max_tokens=32768, temperature=0.88, thinking_budget=2048)
         teaser, paid = _split_content(raw)
         logger.info(
             f"[日次] {sign['name']} 生成完了: "
@@ -188,7 +188,9 @@ class HoroscopeGenerator:
             signs_block=signs_block,
         )
 
-        raw = self._client.generate(prompt, max_tokens=32768, temperature=0.88)
+        # 思考型モデルは考える過程にも出力枠を使い、4星座ぶん（約2万字）を書き切る前に上限に達する。
+        # 出力上限を最大にし、考える量を抑えて本文に枠を回す。
+        raw = self._client.generate(prompt, max_tokens=65536, temperature=0.88, thinking_budget=2048)
         results = _split_batch(raw, [s["en"] for s in signs])
 
         missing = [s["en"] for s in signs if s["en"] not in results]
@@ -223,7 +225,7 @@ class HoroscopeGenerator:
             price=theme["price"],
             style_guide=_load_style_guide(),
         )
-        raw = self._client.generate(prompt, max_tokens=16384, temperature=0.86)
+        raw = self._client.generate(prompt, max_tokens=65536, temperature=0.86, thinking_budget=2048)
         teaser, paid = _split_content(raw)
         logger.info(
             f"[悩み特化:{theme['key']}] {sign['name']} 生成完了: "
@@ -280,7 +282,7 @@ class HoroscopeGenerator:
             style_guide=_load_style_guide(),
         )
 
-        raw = self._client.generate(prompt, max_tokens=8192, temperature=0.87)
+        raw = self._client.generate(prompt, max_tokens=32768, temperature=0.87, thinking_budget=2048)
         teaser, paid = _split_content(raw)
         logger.info(
             f"[週次] {sign['name']} 生成完了: "
@@ -334,7 +336,7 @@ class HoroscopeGenerator:
             style_guide=_load_style_guide(),
         )
 
-        raw = self._client.generate(prompt, max_tokens=16384, temperature=0.85)
+        raw = self._client.generate(prompt, max_tokens=65536, temperature=0.85, thinking_budget=2048)
         teaser, paid = _split_content(raw)
         logger.info(
             f"[月次] {sign['name']} 生成完了: "

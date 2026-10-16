@@ -44,16 +44,23 @@ class GeminiClient:
         self.active_model = self.models[0]
         logger.info(f"GeminiClient 初期化完了: モデル候補={self.models}")
 
-    def generate(self, prompt: str, max_tokens: int = 8192, temperature: float = 0.85) -> str:
+    def generate(self, prompt: str, max_tokens: int = 8192, temperature: float = 0.85,
+                 thinking_budget: int | None = None) -> str:
         """プロンプトを送信してテキストを生成する。
 
         モデルが見つからない/未対応(404)の場合は次の候補モデルへ自動フォールバックする。
         一時的なエラー(レート制限など)は指数バックオフでリトライする。
+        thinking_budget: 思考型モデル（gemini-3.x）が考える量の上限。長文の一括生成では、
+        思考に出力枠を使われて本文が途中で切れるため、小さめに指定する。
         """
+        extra = {}
+        if thinking_budget is not None:
+            extra["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
         config = types.GenerateContentConfig(
             max_output_tokens=max_tokens,
             temperature=temperature,
             top_p=0.95,
+            **extra,
         )
 
         last_error: Exception | None = None
@@ -72,6 +79,9 @@ class GeminiClient:
                     result = (response.text or "").strip()
                     if not result:
                         raise RuntimeError("EMPTY_RESPONSE")
+                    reason = getattr(getattr((response.candidates or [None])[0], "finish_reason", None), "name", "")
+                    if reason == "MAX_TOKENS":
+                        logger.warning(f"出力が上限({max_tokens}トークン)で途中まで（{model_name}・{len(result)}文字）")
                     if model_name != self.active_model:
                         logger.info(f"モデル切替: {self.active_model} → {model_name}")
                         self.active_model = model_name
