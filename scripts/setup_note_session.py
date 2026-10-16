@@ -52,14 +52,15 @@ def _session_key() -> tuple[str, bool]:
 
 def _gh(args: list[str], stdin: str | None = None) -> bool:
     try:
-        r = subprocess.run(["gh", *args], input=stdin, text=True, capture_output=True, cwd=ROOT)
+        r = subprocess.run(["gh", *args], input=stdin, text=True, capture_output=True, cwd=ROOT,
+                           encoding="utf-8", errors="replace")
         return r.returncode == 0
     except FileNotFoundError:
         return False
 
 
 def _git(args: list[str]) -> bool:
-    r = subprocess.run(["git", *args], text=True, capture_output=True, cwd=ROOT)
+    r = subprocess.run(["git", *args], text=True, capture_output=True, cwd=ROOT, encoding="utf-8", errors="replace")
     return r.returncode == 0
 
 
