@@ -40,6 +40,12 @@ def _load_storage_state() -> dict | None:
     session_file = Path("output/note_session.json")
     if session_file.exists():
         return json.loads(session_file.read_text(encoding="utf-8"))
+    # このリポジトリはセッションを暗号化して data/session/ に置いている（SESSION_KEY で復号）
+    try:
+        from src.publishers.session_store import load_encrypted
+        return load_encrypted()
+    except Exception as e:
+        logger.warning(f"暗号化セッションの読み込みに失敗: {e}")
     return None
 
 
