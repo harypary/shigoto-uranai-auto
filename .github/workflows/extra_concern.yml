@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: '0 23 * * 4'    # 金曜 8:00 JST（主）
     - cron: '0 0 * * 5'     # 金曜 9:00 JST（バックアップ）
+    - cron: '0 23 * * 5'    # 土曜 8:00 JST（1日の投稿枠で残った星座の補充）
   workflow_dispatch:
     inputs:
       theme:

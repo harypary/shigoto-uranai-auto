@@ -157,6 +157,56 @@ def fetch_published_signs(marker: str, max_pages: int = 8) -> set:
     return found
 
 
+DAILY_NOTE_PRICE = 300
+# note には新しいアカウントの1日の投稿数に非公開の上限があり、20本前後から「投稿する」を押しても公開されなくなる
+# （2026-10-18・19 に2日続けて20本で停止）。毎日の仕事運12本を優先し、それ以外（週間・悩み・お金・月間）は
+# 1日この本数までにして、残りは翌日の補充cronで投稿する。
+OTHER_DAILY_LIMIT = int(os.environ.get("OTHER_DAILY_LIMIT", "8"))
+
+
+def other_posts_today() -> int:
+    """今日（JST）公開された記事のうち、毎日の仕事運（300円）以外の本数を note.com 本体から数える"""
+    import requests
+    from datetime import datetime, timedelta, timezone
+    from src.utils.logger import get_logger
+
+    today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+    count = 0
+    try:
+        for page in range(1, 9):  # 1ページ6件。1日20本前後を数え切れるよう8ページ（48件）まで見る
+            r = requests.get(
+                f"https://note.com/api/v2/creators/{NOTE_USER_ID}/contents",
+                params={"kind": "note", "page": page},
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=15,
+            )
+            if r.status_code != 200:
+                break
+            data = r.json().get("data", {})
+            contents = data.get("contents", [])
+            for n in contents:
+                if (n.get("publishAt") or "")[:10] == today and (n.get("price") or 0) != DAILY_NOTE_PRICE:
+                    count += 1
+            # 新しい順に並ぶので、今日より前の記事が出てきたら打ち切る
+            if data.get("isLastPage") or not contents or (contents[-1].get("publishAt") or "")[:10] < today:
+                break
+    except Exception as e:
+        get_logger("post_logger").warning(f"今日の投稿数の確認に失敗: {e}（上限確認をせずに続行します）")
+        return 0
+    return count
+
+
+def other_quota_reached() -> bool:
+    """毎日の仕事運以外の、今日の投稿枠を使い切ったら True"""
+    from src.utils.logger import get_logger
+
+    n = other_posts_today()
+    if n >= OTHER_DAILY_LIMIT:
+        get_logger("post_logger").info(
+            f"今日の投稿枠（毎日の仕事運以外は{OTHER_DAILY_LIMIT}本まで）に達しました（{n}本）。残りは翌日の補充枠で投稿します")
+        return True
+    return False
+
+
 def give_up_draft_if_stuck(plog: "PostLogger", post_type: str, period: str, sign_en: str, label: str = "") -> bool:
     """下書きの公開失敗を数え、上限に達したらその下書きを捨てる。捨てたら True。"""
     from src.utils.logger import get_logger

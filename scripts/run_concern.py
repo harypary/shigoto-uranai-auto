@@ -97,6 +97,7 @@ def main():
 
     success_count = 0
     fail_count = 0
+    limited = False  # 1日の投稿枠に達して途中で止めたか
 
     # post_log は Actions キャッシュ依存で欠落しうる。note.com 本体を正として
     # 同じテーマの記事が既にある星座を除外する（常設記事なので全期間を深く見る）
@@ -112,6 +113,11 @@ def main():
             logger.info(f"[{i+1}/12] {sign['name']} → 既に公開済みのためスキップ")
             success_count += 1
             continue
+
+        from src.publishers.post_logger import other_quota_reached
+        if other_quota_reached():
+            limited = True
+            break
 
         # 公開確認が404で遅れただけの記事を作り直すと同じ記事が増えるため、
         # 前回「未確認」で残した下書きは新規作成せず公開フローだけやり直す
@@ -184,6 +190,9 @@ def main():
 
     # 1件でも未投稿があれば失敗扱いにし、ジョブ内リトライとバックアップcronで残りを埋める
     # （公開済みの星座は post_log で判定してスキップされる）
+    if limited:
+        logger.info("今日の投稿枠に達したため、残りの星座は翌日の補充枠で投稿します")
+        return
     if fail_count > 0:
         logger.error(f"未投稿: {fail_count}件 → ワークフローが再試行します")
         sys.exit(1)

@@ -50,6 +50,7 @@ def main():
 
     success_count = 0
     fail_count = 0
+    limited = False  # 1日の投稿枠に達して途中で止めたか（残りは2〜7日の補充cronで投稿）
 
     for i, sign in enumerate(ZODIAC_SIGNS):
         sign_en = sign["en"]
@@ -60,6 +61,11 @@ def main():
             logger.info(f"[{i+1}/12] {sign['name']} → 既に公開済みのためスキップ")
             success_count += 1
             continue
+
+        from src.publishers.post_logger import other_quota_reached
+        if other_quota_reached():
+            limited = True
+            break
 
         # ── 下書き復旧チェック ──
         draft_url = plog.get_draft_url(POST_TYPE, period, sign_en)
@@ -123,6 +129,9 @@ def main():
 
     logger.info(f"=== 月次note投稿完了: 成功{success_count}件 / 失敗{fail_count}件 ===")
 
+    if limited:
+        logger.info("今日の投稿枠に達したため、残りの星座は翌日以降の補充枠で投稿します")
+        return
     if fail_count > 0 and success_count == 0:
         sys.exit(1)
 

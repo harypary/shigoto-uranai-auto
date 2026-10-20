@@ -61,6 +61,7 @@ def main():
     success_count = 0
     fail_count = 0
     first_url = None
+    limited = False  # 1日の投稿枠に達して途中で止めたか（残りは火曜の補充cronで投稿）
 
     already_on_note = fetch_published_signs(week_label)
     if already_on_note:
@@ -84,6 +85,11 @@ def main():
                     pass
             success_count += 1
             continue
+
+        from src.publishers.post_logger import other_quota_reached
+        if other_quota_reached():
+            limited = True
+            break
 
         # ── 下書き復旧チェック ──
         draft_url = plog.get_draft_url(POST_TYPE, period, sign_en)
@@ -162,6 +168,9 @@ def main():
 
     # 1件でも未投稿があれば失敗扱いにし、ワークフローの再試行・バックアップcronで残りを埋める
     # （公開済みの星座は note.com / post_log で判定してスキップされる）
+    if limited:
+        logger.info("今日の投稿枠に達したため、残りの星座は翌日の補充枠で投稿します")
+        return
     if fail_count > 0:
         logger.error(f"未投稿: {fail_count}件 → ワークフローが再試行します")
         sys.exit(1)
