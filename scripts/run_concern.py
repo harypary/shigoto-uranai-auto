@@ -81,7 +81,7 @@ def _select_theme(plog: PostLogger, gemini: GeminiClient, group: str) -> dict:
     return new_theme
 
 
-def main():
+def main(depth: int = 0):
     group = os.environ.get("CONCERN_GROUP", "general")
     gemini = GeminiClient()
     plog = PostLogger()
@@ -98,6 +98,7 @@ def main():
     success_count = 0
     fail_count = 0
     limited = False  # 1日の投稿枠に達して途中で止めたか
+    posted_now = 0   # この実行で新たに公開できた本数（次のテーマへ続けるかの判断に使う）
 
     # post_log は Actions キャッシュ依存で欠落しうる。note.com 本体を正として
     # 同じテーマの記事が既にある星座を除外する（常設記事なので全期間を深く見る）
@@ -136,6 +137,7 @@ def main():
                 if infer_published(url):
                     plog.record_published(post_type, PERIOD, sign_en, url)
                     success_count += 1
+                    posted_now += 1
                 else:
                     logger.warning(f"[{i+1}/12] {sign['name']} 公開未確認: {url}")
                     give_up_draft_if_stuck(plog, post_type, PERIOD, sign_en, sign["name"])
@@ -172,6 +174,7 @@ def main():
                 plog.record_published(post_type, PERIOD, sign_en, url)
                 logger.info(f"[{i+1}/12] {sign['name']} 公開完了: {url}")
                 success_count += 1
+                posted_now += 1
             else:
                 # 下書きとして記録し、次回は作り直さずこの記事の公開をやり直す
                 plog.record_draft(post_type, PERIOD, sign_en, url, title=title, price=price)
@@ -196,6 +199,12 @@ def main():
     if fail_count > 0:
         logger.error(f"未投稿: {fail_count}件 → ワークフローが再試行します")
         sys.exit(1)
+
+    # 前回の残りを出し終えて今日の投稿枠が余っていれば、次のテーマへ続ける。
+    # （1回の実行が1テーマで終わると、残り3本だけ出して枠の大半が空く）。最大3テーマまで。
+    if posted_now > 0 and depth < 2:
+        logger.info("このテーマは全星座公開済み。今日の投稿枠が残っていれば次のテーマへ続けます")
+        main(depth + 1)
 
 
 if __name__ == "__main__":
