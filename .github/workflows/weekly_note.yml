@@ -143,6 +143,4 @@ jobs:
           path: |
             output/images/
             output/logs/
-            output/stats/
-            output/strategy/
           retention-days: 14
