@@ -48,10 +48,38 @@ PERIOD = "permanent"  # 常設記事なので固定（再実行時は公開済�
 
 
 def _has_remaining_signs(plog: PostLogger, theme: dict) -> bool:
+    """未公開の星座が残っているか。post_log（Actionsキャッシュ）は消えることがあるため、
+    note.com 本体の公開済み記事も確認し、両方で公開済みと分かる星座は除く。"""
     post_type = f"concern_{theme['key']}"
-    return any(
-        not plog.is_published(post_type, PERIOD, s["en"]) for s in ZODIAC_SIGNS
-    )
+    remaining = [s for s in ZODIAC_SIGNS if not plog.is_published(post_type, PERIOD, s["en"])]
+    if not remaining:
+        return False
+    on_note = _signs_on_note(theme["title"])
+    return any(s["en"] not in on_note for s in remaining)
+
+
+_ALL_TITLES: list[str] | None = None
+
+
+def _signs_on_note(theme_title: str) -> set:
+    """note.com の全公開記事（1回だけ全ページ取得して使い回す）から、このテーマで公開済みの星座を返す。
+    悩み特化は常設記事で古い記事ほど奥のページにあるため、ページ数で打ち切らず最後まで見る。"""
+    global _ALL_TITLES
+    if _ALL_TITLES is None:
+        import requests
+        titles = []
+        try:
+            for page in range(1, 1000):
+                d = requests.get(f"https://note.com/api/v2/creators/{os.environ.get('NOTE_USER_ID', '')}/contents",
+                                 params={"kind": "note", "page": page}, headers={"User-Agent": "Mozilla/5.0"},
+                                 timeout=15).json().get("data", {})
+                titles += [n.get("name", "") for n in d.get("contents", [])]
+                if d.get("isLastPage") or not d.get("contents"):
+                    break
+        except Exception as e:
+            logger.warning(f"note.com の公開済み記事の取得に失敗: {e}（post_logのみで判定します）")
+        _ALL_TITLES = titles
+    return {s["en"] for t in _ALL_TITLES if theme_title in t for s in ZODIAC_SIGNS if s["name"] in t}
 
 
 def _select_theme(plog: PostLogger, gemini: GeminiClient, group: str) -> dict:
@@ -102,7 +130,7 @@ def main(depth: int = 0):
 
     # post_log は Actions キャッシュ依存で欠落しうる。note.com 本体を正として
     # 同じテーマの記事が既にある星座を除外する（常設記事なので全期間を深く見る）
-    already_on_note = fetch_published_signs(theme["title"], max_pages=30)
+    already_on_note = _signs_on_note(theme["title"])
     if already_on_note:
         logger.info(f"note.comで公開済みの星座: {len(already_on_note)}件")
 
