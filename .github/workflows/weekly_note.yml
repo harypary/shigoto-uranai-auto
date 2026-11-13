@@ -15,7 +15,7 @@ concurrency:
 jobs:
   post-weekly-note:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240  # 公開枠の待機ぶん長め
 
     steps:
       - name: Checkout repository

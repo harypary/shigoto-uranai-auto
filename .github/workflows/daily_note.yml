@@ -16,7 +16,7 @@ concurrency:
 jobs:
   post-daily-note:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300  # note の「60分で6本まで」の公開枠を待つため長め
     permissions:
       actions: read
       contents: read   # 非公開リポジトリでは明示しないと checkout できない

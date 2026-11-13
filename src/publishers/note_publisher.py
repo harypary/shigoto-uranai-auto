@@ -68,6 +68,8 @@ class NotePublisher:
         price: 価格（円）
         hashtags: ハッシュタグリスト（最大5個）
         """
+        from src.publishers.post_logger import wait_for_publish_slot
+        wait_for_publish_slot()  # note の「60分で6本まで」の公開枠が空くまで待つ
         storage_state = self._load_session()
 
         with sync_playwright() as p:
@@ -376,6 +378,8 @@ class NotePublisher:
         cover_image_path: カバー画像のパス（省略可）
         hashtags: ハッシュタグリスト（最大5個）
         """
+        from src.publishers.post_logger import wait_for_publish_slot
+        wait_for_publish_slot()  # note の「60分で6本まで」の公開枠が空くまで待つ
         storage_state = self._load_session()
 
         with sync_playwright() as p:

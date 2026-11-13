@@ -207,6 +207,55 @@ def other_quota_reached() -> bool:
     return False
 
 
+# note は新しいアカウントの公開を「直近60分で6本まで」に制限している（2026-11-12・13 に、公開が
+# 6本ずつ・前の山のちょうど60分後に再開する形で観測。枠内で押した公開は失敗して下書きに残る）。
+# 公開前に note.com 本体の直近の公開時刻を見て、枠が空くまで待つ。
+PUBLISH_HOURLY_LIMIT = int(os.environ.get("PUBLISH_HOURLY_LIMIT", "6"))
+
+
+def wait_for_publish_slot(max_wait_min: int = 75) -> None:
+    """直近60分の公開数が上限に達していたら、いちばん古い1本が60分を過ぎるまで待つ"""
+    import requests
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+    from src.utils.logger import get_logger
+
+    log = get_logger("post_logger")
+    deadline = _time.time() + max_wait_min * 60
+    while True:
+        now = datetime.now(timezone.utc)
+        recent = []
+        try:
+            for page in (1, 2):  # 1ページ6件。新しい順なので2ページで直近12本を見れば足りる
+                d = requests.get(
+                    f"https://note.com/api/v2/creators/{NOTE_USER_ID}/contents",
+                    params={"kind": "note", "page": page},
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=15,
+                ).json().get("data", {})
+                for n in d.get("contents", []):
+                    t = datetime.fromisoformat(n.get("publishAt") or "1970-01-01T00:00:00+00:00")
+                    if now - t < timedelta(minutes=60):
+                        recent.append(t)
+                if d.get("isLastPage"):
+                    break
+        except Exception as e:
+            log.warning(f"直近の公開数の確認に失敗: {e}（待たずに続行します）")
+            return
+        if not recent or len(recent) < PUBLISH_HOURLY_LIMIT:
+            return
+        recent.sort()
+        # この1本が60分を過ぎれば、枠が1つ空く（+2分の余裕）
+        free_at = recent[len(recent) - PUBLISH_HOURLY_LIMIT] + timedelta(minutes=62)
+        wait = (free_at - now).total_seconds()
+        if _time.time() + wait > deadline:
+            wait = max(0, deadline - _time.time())
+            if wait == 0:
+                log.warning("公開枠の待機が上限時間を超えたため、そのまま公開を試みます")
+                return
+        log.info(f"直近60分の公開が{len(recent)}本（上限{PUBLISH_HOURLY_LIMIT}本）→ 枠が空くまで{int(wait // 60)}分待機")
+        _time.sleep(max(wait, 30))
+
+
 def give_up_draft_if_stuck(plog: "PostLogger", post_type: str, period: str, sign_en: str, label: str = "") -> bool:
     """下書きの公開失敗を数え、上限に達したらその下書きを捨てる。捨てたら True。"""
     from src.utils.logger import get_logger
