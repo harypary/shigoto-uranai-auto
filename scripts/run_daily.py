@@ -25,6 +25,7 @@ from src.publishers.image_generator import CoverImageGenerator
 from src.publishers.post_logger import (
     PostLogger,
     fetch_published_signs,
+    daily_slots_left,
     give_up_draft_if_stuck,
     infer_published,
     period_for,
@@ -46,7 +47,7 @@ HASHTAG_BASE = ["仕事運", "今日の運勢", "占い", "星座占い", "金�
 MAX_RETRIES = 2  # 1星座あたりの最大リトライ回数
 
 
-def _generate_missing_in_batches(generator, plog, period, today, date_str, already_on_note) -> None:
+def _generate_missing_in_batches(generator, plog, period, today, date_str, already_on_note, signs) -> None:
     """未生成の星座をまとめて生成し、キャッシュへ保存する。
 
     星座ごとに個別APIを呼ぶとGemini無料枠（1モデル20リクエスト/日）を
@@ -55,7 +56,7 @@ def _generate_missing_in_batches(generator, plog, period, today, date_str, alrea
     分割して確実に全星座ぶんを取得する。
     """
     todo = [
-        s for s in ZODIAC_SIGNS
+        s for s in signs
         if not plog.is_published(POST_TYPE, period, s["en"])
         and s["en"] not in already_on_note
         and content_cache.load(POST_TYPE, period, s["en"]) is None
@@ -186,17 +187,32 @@ def main():
 
     success_count = 0
     fail_count = 0
+    limited = False  # 1日の公開上限（悩み特化・お金に残す枠を含む）で止めたか
+
+    # 1,980円の悩み特化・お金を優先する（2026-11-17 方針）。18時より前は、それらがまだ使っていない枠を
+    # 残して投稿し、夜の補充実行（daily_note.yml の夕方cron）で余った枠を使う。
+    reserve = datetime.now(JST).hour < 18
+    # 枠が足りず出せない星座が毎日同じにならないよう、開始する星座を日ごとにずらす
+    # 8本ずつ進めると、出せない4星座が3日に1回ずつ均等に回る
+    offset = (today.toordinal() * 8) % len(ZODIAC_SIGNS)
+    signs_today = ZODIAC_SIGNS[offset:] + ZODIAC_SIGNS[:offset]
 
     # note.com を正として今日公開済みの星座を取得（キャッシュ欠落・並走時の二重投稿を防ぐ）
     already_on_note = fetch_published_signs(date_str)
     if already_on_note:
         logger.info(f"note.comで公開済みの星座: {len(already_on_note)}件")
 
+    pending = [s for s in signs_today
+               if not plog.is_published(POST_TYPE, period, s["en"]) and s["en"] not in already_on_note]
+    slots = daily_slots_left(reserve)
+    logger.info(f"今日この実行で使える枠: {slots}本（未公開{len(pending)}星座・"
+                f"{'悩み特化などの枠を残す' if reserve else '余った枠をすべて使う'}）")
+    # 出せる本数ぶんだけ生成して、Gemini無料枠を使い切らないようにする
     _generate_missing_in_batches(
-        generator, plog, period, today, date_str, already_on_note
+        generator, plog, period, today, date_str, already_on_note, pending[:slots]
     )
 
-    for i, sign in enumerate(ZODIAC_SIGNS):
+    for i, sign in enumerate(signs_today):
         sign_en = sign["en"]
 
         # ── 重複チェック ──
@@ -204,6 +220,11 @@ def main():
             logger.info(f"[{i+1}/12] {sign['name']} → 既に公開済みのためスキップ")
             success_count += 1
             continue
+
+        # 並走する悩み特化などが枠を使うことがあるので、1本ごとに確認する
+        if daily_slots_left(reserve) <= 0:
+            limited = True
+            break
 
         # ── 投稿（最大 MAX_RETRIES 回リトライ）──
         logger.info(f"[{i+1}/12] {sign['name']} 処理開始...")
@@ -243,6 +264,9 @@ def main():
     logger.info(f"=== 日次note投稿完了: 成功{success_count}件 / 失敗{fail_count}件 ===")
 
     # 失敗がある場合は exit 1（ワークフローのリトライに使われる）
+    if limited and fail_count == 0:
+        logger.info("今日の公開枠を使い切ったため、残りの星座は夜の補充実行で投稿します（枠が余らなければ今日は見送り）")
+        return
     if fail_count > 0:
         logger.error(f"未投稿: {fail_count}件 → ワークフローが再試行します")
         sys.exit(1)

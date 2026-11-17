@@ -158,20 +158,22 @@ def fetch_published_signs(marker: str, max_pages: int = 8) -> set:
 
 
 DAILY_NOTE_PRICE = 300
-# note には新しいアカウントの1日の投稿数に非公開の上限があり、20本前後から「投稿する」を押しても公開されなくなる
-# （2026-10-18・19 に2日続けて20本で停止）。毎日の仕事運12本を優先し、それ以外（週間・悩み・お金・月間）は
-# 1日この本数までにして、残りは翌日の補充cronで投稿する。
+# note は新しいアカウントの公開を1日（JST・暦日）16本までに制限している（2026-11-12〜16、毎日16本で停止。
+# 10月は20本だった）。上限後に押した公開は失敗して下書きに残るだけなので、上限に達したら押さない。
+DAILY_TOTAL_LIMIT = int(os.environ.get("DAILY_TOTAL_LIMIT", "16"))
+# 毎日の仕事運以外（週間・悩み特化・お金・月間）の1日の本数。1,980円の悩み特化・お金を優先する方針（2026-11-17）で、
+# 毎日の仕事運は朝の時点でこの枠を残して投稿し、夜の補充で余った枠を使う。
 OTHER_DAILY_LIMIT = int(os.environ.get("OTHER_DAILY_LIMIT", "8"))
 
 
-def other_posts_today() -> int:
-    """今日（JST）公開された記事のうち、毎日の仕事運（300円）以外の本数を note.com 本体から数える"""
+def posts_today() -> tuple[int, int]:
+    """今日（JST）公開された記事の (全体の本数, 毎日の仕事運以外の本数) を note.com 本体から数える"""
     import requests
     from datetime import datetime, timedelta, timezone
     from src.utils.logger import get_logger
 
     today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
-    count = 0
+    total = other = 0
     try:
         for page in range(1, 9):  # 1ページ6件。1日20本前後を数え切れるよう8ページ（48件）まで見る
             r = requests.get(
@@ -184,27 +186,45 @@ def other_posts_today() -> int:
             data = r.json().get("data", {})
             contents = data.get("contents", [])
             for n in contents:
-                if (n.get("publishAt") or "")[:10] == today and (n.get("price") or 0) != DAILY_NOTE_PRICE:
-                    count += 1
+                if (n.get("publishAt") or "")[:10] == today:
+                    total += 1
+                    if (n.get("price") or 0) != DAILY_NOTE_PRICE:
+                        other += 1
             # 新しい順に並ぶので、今日より前の記事が出てきたら打ち切る
             if data.get("isLastPage") or not contents or (contents[-1].get("publishAt") or "")[:10] < today:
                 break
     except Exception as e:
         get_logger("post_logger").warning(f"今日の投稿数の確認に失敗: {e}（上限確認をせずに続行します）")
-        return 0
-    return count
+        return 0, 0
+    return total, other
+
+
+def other_posts_today() -> int:
+    return posts_today()[1]
 
 
 def other_quota_reached() -> bool:
-    """毎日の仕事運以外の、今日の投稿枠を使い切ったら True"""
+    """毎日の仕事運以外の、今日の投稿枠を使い切ったら True（1日全体の上限に達した場合も True）"""
     from src.utils.logger import get_logger
 
-    n = other_posts_today()
-    if n >= OTHER_DAILY_LIMIT:
+    total, other = posts_today()
+    if total >= DAILY_TOTAL_LIMIT:
         get_logger("post_logger").info(
-            f"今日の投稿枠（毎日の仕事運以外は{OTHER_DAILY_LIMIT}本まで）に達しました（{n}本）。残りは翌日の補充枠で投稿します")
+            f"今日の公開が{total}本で note の1日の上限（{DAILY_TOTAL_LIMIT}本）に達しました。残りは翌日の補充枠で投稿します")
+        return True
+    if other >= OTHER_DAILY_LIMIT:
+        get_logger("post_logger").info(
+            f"今日の投稿枠（毎日の仕事運以外は{OTHER_DAILY_LIMIT}本まで）に達しました（{other}本）。残りは翌日の補充枠で投稿します")
         return True
     return False
+
+
+def daily_slots_left(reserve_for_others: bool) -> int:
+    """毎日の仕事運に今日あと何本使えるか。reserve_for_others=True なら、
+    悩み特化・お金などがまだ使っていない枠（OTHER_DAILY_LIMIT までの残り）を空けておく。"""
+    total, other = posts_today()
+    reserve = max(0, OTHER_DAILY_LIMIT - other) if reserve_for_others else 0
+    return max(0, DAILY_TOTAL_LIMIT - total - reserve)
 
 
 # note は新しいアカウントの公開を「直近60分で6本まで」に制限している（2026-11-12・13 に、公開が
